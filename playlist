@@ -123,7 +123,7 @@ def main() -> None:
     GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
     proc, sock, ipc_path = start_player(PLAYLIST[0])
-    mpv_send(sock, ["playlist-add", PLAYLIST[1]])
+    mpv_send(sock, ["loadfile", PLAYLIST[1], "append"])
     mpv_send(sock, ["set_property", "loop-file", "inf"])
     mpv_send(sock, ["set_property", "mute", "yes"])
     current = 0
