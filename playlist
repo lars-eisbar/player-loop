@@ -128,6 +128,7 @@ def main() -> None:
     mpv_send(sock, ["set_property", "mute", "yes"])
     current = 0
     buf = bytearray()
+    last_pressed = GPIO.input(BUTTON_PIN) == GPIO.HIGH
 
     try:
         while True:
@@ -150,16 +151,18 @@ def main() -> None:
                     current = 0
 
             pressed = GPIO.input(BUTTON_PIN) == GPIO.HIGH
-            if pressed and current != 0:
-                mpv_send(sock, ["playlist-play-index", 0])
-                mpv_send(sock, ["set_property", "loop-file", "inf"])
-                mpv_send(sock, ["set_property", "mute", "yes"])
-                current = 0
-            elif not pressed and current != 1:
-                mpv_send(sock, ["set_property", "loop-file", "no"])
-                mpv_send(sock, ["playlist-play-index", 1])
-                mpv_send(sock, ["set_property", "mute", "no"])
-                current = 1
+            if pressed != last_pressed:
+                if pressed:
+                    mpv_send(sock, ["set_property", "loop-file", "no"])
+                    mpv_send(sock, ["playlist-play-index", 1])
+                    mpv_send(sock, ["set_property", "mute", "no"])
+                    current = 1
+                else:
+                    mpv_send(sock, ["playlist-play-index", 0])
+                    mpv_send(sock, ["set_property", "loop-file", "inf"])
+                    mpv_send(sock, ["set_property", "mute", "yes"])
+                    current = 0
+                last_pressed = pressed
 
             time.sleep(0.1)
     except KeyboardInterrupt:
