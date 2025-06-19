@@ -149,7 +149,7 @@ def main() -> None:
                     mpv_send(sock, ["set_property", "mute", "yes"])
                     current = 0
 
-            pressed = GPIO.input(BUTTON_PIN) == GPIO.LOW
+            pressed = GPIO.input(BUTTON_PIN) == GPIO.HIGH
             if pressed and current != 0:
                 mpv_send(sock, ["playlist-play-index", 0])
                 mpv_send(sock, ["set_property", "loop-file", "inf"])
