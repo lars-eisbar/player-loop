@@ -125,7 +125,7 @@ def main() -> None:
     proc, sock, ipc_path = start_player(PLAYLIST[0])
     mpv_send(sock, ["loadfile", PLAYLIST[1], "append"])
     mpv_send(sock, ["set_property", "loop-file", "inf"])
-    mpv_send(sock, ["set_property", "mute", "yes"])
+    mpv_send(sock, ["set_property", "mute", True])
     current = 0
     buf = bytearray()
 
@@ -136,12 +136,12 @@ def main() -> None:
             if pressed and current != 0:
                 mpv_send(sock, ["playlist-play-index", 0])
                 mpv_send(sock, ["set_property", "loop-file", "inf"])
-                mpv_send(sock, ["set_property", "mute", "yes"])
+                mpv_send(sock, ["set_property", "mute", True])
                 current = 0
             elif not pressed and current != 1:
-                mpv_send(sock, ["set_property", "loop-file", "no"])
+                mpv_send(sock, ["set_property", "loop-file", 0])
                 mpv_send(sock, ["playlist-play-index", 1])
-                mpv_send(sock, ["set_property", "mute", "no"])
+                mpv_send(sock, ["set_property", "mute", False])
                 current = 1
 
             time.sleep(0.1)
