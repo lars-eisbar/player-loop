@@ -14,55 +14,73 @@ import shutil
 import RPi.GPIO as GPIO
 
 # Pfade zu den abzuspielenden Videos
-MAIN_VIDEO = '/path/to/main_video.mp4'
-ALT_VIDEO = '/path/to/alt_video.mp4'
+# Pfade zu den abzuspielenden Videos (Index 0 wird geloopt, Index 1 einmalig)
+PLAYLIST = [
+    '/path/to/main_video.mp4',  # Loop-Video (ohne Ton)
+    '/path/to/alt_video.mp4',   # Hauptvideo mit Ton
+]
 
 # Pfad zu mpv. Kann über die Umgebungsvariable ``MPV_CMD`` angepasst werden.
 MPV_CMD = os.environ.get("MPV_CMD", shutil.which("mpv") or "mpv")
 
 # Basisschalter für mpv. Falls Probleme auftreten, können sie hier angepasst
 # oder geleert werden.
-MPV_OPTS_LOOP = ["--fs", "--loop=inf", "--mute=yes", "--really-quiet"]
-MPV_OPTS_ONCE = ["--fs", "--really-quiet"]
+MPV_OPTS = ["--fs", "--idle=yes", "--really-quiet"]
 
 # GPIO-Pin, an dem der Taster angeschlossen ist
 BUTTON_PIN = 23
 
 
-def start_loop(video_path: str) -> tuple[subprocess.Popen, str]:
-    """Startet ein Video endlos in einer Schleife ohne Ton und gibt den Socket-Pfad zurück."""
-    ipc_path = f"/tmp/mpv_main_{int(time.time()*1000)}.sock"
+def start_player(video_path: str) -> tuple[subprocess.Popen, socket.socket, str]:
+    """Startet mpv im Idle-Modus und gibt Prozess, Socket und Pfad zurück."""
+    ipc_path = f"/tmp/mpv_{int(time.time() * 1000)}.sock"
     proc = subprocess.Popen(
         [
             MPV_CMD,
-            *MPV_OPTS_LOOP,
+            *MPV_OPTS,
             f"--input-ipc-server={ipc_path}",
             video_path,
         ],
         stdin=subprocess.PIPE,
-        # Ausgaben von mpv nicht unterdrücken, damit Fehlermeldungen sichtbar sind
         preexec_fn=os.setsid,
     )
-    return proc, ipc_path
+    # Auf Socket warten
+    for _ in range(50):
+        if os.path.exists(ipc_path):
+            break
+        time.sleep(0.1)
+    sock = socket.socket(socket.AF_UNIX)
+    sock.connect(ipc_path)
+    sock.setblocking(False)
+    return proc, sock, ipc_path
 
 
-def start_once(video_path: str) -> tuple[subprocess.Popen, str]:
-    """Spielt ein Video einmalig mit Einblendung ab und gibt den Socket-Pfad zurück."""
-    ipc_path = f"/tmp/mpv_{int(time.time()*1000)}.sock"
-    proc = subprocess.Popen(
-        [
-            MPV_CMD,
-            *MPV_OPTS_ONCE,
-            f"--input-ipc-server={ipc_path}",
-            "--vf=lavfi=fade=t=in:st=0:d=1",
-            "--af=lavfi=afade=t=in:st=0:d=1",
-            video_path,
-        ],
-        stdin=subprocess.PIPE,
-        # Ausgaben von mpv nicht unterdrücken, damit Fehlermeldungen sichtbar sind
-        preexec_fn=os.setsid,
-    )
-    return proc, ipc_path
+def mpv_send(sock: socket.socket, command: list) -> None:
+    """Sendet einen Befehl an mpv."""
+    msg = json.dumps({"command": command}) + "\n"
+    sock.sendall(msg.encode())
+
+
+def poll_events(sock: socket.socket, buffer: bytearray) -> list[dict]:
+    """Liest alle verfügbaren Ereignisse vom mpv-Socket."""
+    events: list[dict] = []
+    try:
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buffer.extend(chunk)
+    except BlockingIOError:
+        pass
+
+    while b"\n" in buffer:
+        line, _, rest = buffer.partition(b"\n")
+        buffer[:] = rest
+        try:
+            events.append(json.loads(line.decode()))
+        except json.JSONDecodeError:
+            continue
+    return events
 
 
 def _fade_out(ipc_path: str, duration: float = 1.0) -> None:
@@ -101,48 +119,39 @@ def main() -> None:
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-    # Hauptvideo starten
-    main_proc: subprocess.Popen | None
-    main_socket: str | None
-    main_proc, main_socket = start_loop(MAIN_VIDEO)
-    # Prozess für Überlagerungsvideo (noch nicht aktiv)
-    overlay_proc: subprocess.Popen | None = None
-    overlay_socket: str | None = None
+    proc, sock, ipc_path = start_player(PLAYLIST[0])
+    mpv_send(sock, ["playlist-add", PLAYLIST[1]])
+    mpv_send(sock, ["set_property", "loop-file", "inf"])
+    mpv_send(sock, ["set_property", "mute", "yes"])
+    current = 0
+    buf = bytearray()
 
     try:
         while True:
-            # Tasterzustand abfragen (LOW = gedrückt)
-            button_pressed = GPIO.input(BUTTON_PIN) == GPIO.LOW
+            for event in poll_events(sock, buf):
+                if event.get("event") == "end-file" and current == 1:
+                    mpv_send(sock, ["playlist-play-index", 0])
+                    mpv_send(sock, ["set_property", "loop-file", "inf"])
+                    mpv_send(sock, ["set_property", "mute", "yes"])
+                    current = 0
 
-            if button_pressed:
-                # Bei Tastendruck: Overlay stoppen und Hauptvideo wiederholen
-                if overlay_proc:
-                    stop_player(overlay_proc, overlay_socket)
-                    overlay_proc = None
-                    overlay_socket = None
-                    main_proc, main_socket = start_loop(MAIN_VIDEO)
-            else:
-                # Taste losgelassen: Hauptvideo stoppen und Overlay starten
-                if overlay_proc is None:
-                    stop_player(main_proc, main_socket)
-                    main_proc = None
-                    main_socket = None
-                    overlay_proc, overlay_socket = start_once(ALT_VIDEO)
+            pressed = GPIO.input(BUTTON_PIN) == GPIO.LOW
+            if pressed and current != 0:
+                mpv_send(sock, ["playlist-play-index", 0])
+                mpv_send(sock, ["set_property", "loop-file", "inf"])
+                mpv_send(sock, ["set_property", "mute", "yes"])
+                current = 0
+            elif not pressed and current != 1:
+                mpv_send(sock, ["set_property", "loop-file", "no"])
+                mpv_send(sock, ["playlist-play-index", 1])
+                mpv_send(sock, ["set_property", "mute", "no"])
+                current = 1
 
-            # Overlay fertig? Dann ggf. Hauptvideo neu starten
-            if overlay_proc and overlay_proc.poll() is not None:
-                stop_player(overlay_proc, overlay_socket)
-                overlay_proc = None
-                overlay_socket = None
-                main_proc, main_socket = start_loop(MAIN_VIDEO)
-
-            # Kurze Pause, um CPU zu entlasten
             time.sleep(0.1)
     except KeyboardInterrupt:
         pass
     finally:
-        stop_player(main_proc, main_socket)
-        stop_player(overlay_proc, overlay_socket)
+        stop_player(proc, ipc_path)
         GPIO.cleanup()
 
 
