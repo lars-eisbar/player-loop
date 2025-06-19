@@ -72,6 +72,9 @@ def poll_events(sock: socket.socket, buffer: bytearray) -> list[dict]:
             buffer.extend(chunk)
     except BlockingIOError:
         pass
+    except OSError:
+        # Socket wurde unerwartet geschlossen
+        return []
 
     while b"\n" in buffer:
         line, _, rest = buffer.partition(b"\n")
@@ -128,6 +131,17 @@ def main() -> None:
 
     try:
         while True:
+            if proc.poll() is not None:
+                stop_player(proc, ipc_path)
+                proc, sock, ipc_path = start_player(PLAYLIST[current])
+                if current == 0:
+                    mpv_send(sock, ["playlist-add", PLAYLIST[1]])
+                    mpv_send(sock, ["set_property", "loop-file", "inf"])
+                    mpv_send(sock, ["set_property", "mute", "yes"])
+                else:
+                    mpv_send(sock, ["playlist-add", PLAYLIST[0]])
+                    mpv_send(sock, ["set_property", "mute", "no"])
+
             for event in poll_events(sock, buf):
                 if event.get("event") == "end-file" and current == 1:
                     mpv_send(sock, ["playlist-play-index", 0])
