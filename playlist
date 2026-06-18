@@ -5,6 +5,7 @@ Diese Variante nutzt ``mpv`` anstelle von ``omxplayer``.
 
 import os
 import signal
+import atexit
 import socket
 import subprocess
 import time
@@ -12,6 +13,18 @@ import json
 import shutil
 
 import RPi.GPIO as GPIO
+
+
+def _cleanup_gpio(*_: object) -> None:
+    """Clean up GPIO resources."""
+    try:
+        GPIO.cleanup()
+    except RuntimeError:
+        pass
+
+
+atexit.register(_cleanup_gpio)
+signal.signal(signal.SIGTERM, _cleanup_gpio)
 
 # Pfade zu den abzuspielenden Videos
 # Pfade zu den abzuspielenden Videos (Index 0 wird geloopt, Index 1 einmalig)
@@ -119,6 +132,11 @@ def stop_player(proc: subprocess.Popen | None, ipc_path: str | None = None):
 
 def main() -> None:
     # GPIO initialisieren
+    try:
+        GPIO.cleanup()
+    except RuntimeError:
+        pass
+
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
